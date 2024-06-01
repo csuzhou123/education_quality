@@ -1,3 +1,4 @@
+import numpy as np
 from deepface import DeepFace
 import cv2
 import traceback
