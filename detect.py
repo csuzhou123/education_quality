@@ -16,6 +16,81 @@ import datasets, hopenet, utils
 from PIL import Image
 import torchvision
 import torch.nn.functional as F
+import tensorflow as tf
+from keras.models import load_model
+from object_detection.builders import model_builder
+from object_detection.utils import config_util
+
+
+CONFIG_PATH = 'Student_Logger-Gaze_Tracking-master/pupil track dependencies/pipeline.config'
+configs = config_util.get_configs_from_pipeline_file(CONFIG_PATH)
+att_detection_model = model_builder.build(model_config=configs['model'], is_training=False)
+@tf.function
+def detect_pupil(image):
+    image, shapes = att_detection_model.preprocess(image)
+    prediction_dict = att_detection_model.predict(image, shapes)
+    detections = att_detection_model.postprocess(prediction_dict, shapes)
+    return detections
+
+def main_pupil(frame):
+    image_np = np.array(frame)
+    input_tensor = tf.convert_to_tensor(np.expand_dims(image_np, 0), dtype=tf.float32)
+    detections = detect_pupil(input_tensor)
+    num_detections = int(detections.pop('num_detections'))
+    detections = {key: value[0, :num_detections].numpy()
+                  for key, value in detections.items()}
+    box = np.squeeze(detections['detection_boxes'])
+    j = []
+    for i in range(3):
+        ymin = (int(box[i, 0] * 480))
+        xmin = (int(box[i, 1] * 640))
+        ymax = (int(box[i, 2] * 480))
+        xmax = (int(box[i, 3] * 640))
+        z = (xmin, ymin, xmax, ymax)
+        j.append(z)
+    return j[0][0], j[0][1], j[0][2], j[0][3], j[1][0], j[1][1], j[1][2], j[1][3], j[2][0], j[2][1], j[2][2], j[2][3]
+
+def get_face_points(face):
+    (x, y, w, h) = face_utils.rect_to_bb(face)
+    return x,y,w,h
+
+def get_head_pose(img, facial_landmarks):
+    hp = [30,8,36,45,59,55]
+    size = img.shape
+    image_points = np.array([(facial_landmarks.part(point).x, facial_landmarks.part(point).y) for point in hp], dtype="double")
+    model_points = np.array([(0.0, 0.0, 0.0),(0.0, -330.0, -65.0),(-225.0, 170.0, -135.0),(225.0, 170.0, -135.0),(-150.0, -150.0, -125.0),(150.0, -150.0, -125.0)])
+    focal_length = size[1]
+    center = (size[1] / 2, size[0] / 2)
+    camera_matrix = np.array([[focal_length, 0, center[0]],[0, focal_length, center[1]],[0, 0, 1]], dtype="double")
+    dist_coeffs = np.zeros((4, 1))
+    (success, rotation_vector, translation_vector) = cv2.solvePnP(model_points, image_points, camera_matrix, dist_coeffs)
+    (nose_end_point2D, jacobian) = cv2.projectPoints(np.array([(0.0, 0.0, 1000.0)]), rotation_vector,
+                                                     translation_vector, camera_matrix, dist_coeffs)
+    p1 = (int(image_points[0][0]), int(image_points[0][1]))
+    p2 = (int(nose_end_point2D[0][0][0]), int(nose_end_point2D[0][0][1]))
+    return p1[0],p1[1],p2[0],p2[1]
+
+def get_eye_points(img, facial_landmarks):
+    lp = [36, 37, 38, 39, 40, 41]
+    rp = [42, 43, 44, 45, 46, 47]
+    #mask = np.zeros((480, 640), np.uint8)
+    mask = np.zeros(img.shape[:2], np.uint8)
+
+    lr = np.array([(facial_landmarks.part(point).x, facial_landmarks.part(point).y) for point in lp])
+    rr = np.array([(facial_landmarks.part(point).x, facial_landmarks.part(point).y) for point in rp])
+
+    mask1 = cv2.fillPoly(mask, [lr], 255)
+    mask1 = cv2.fillPoly(mask1, [rr], 255)
+    eye = cv2.bitwise_and(img, img, mask=mask1)
+
+    leftEyeCenter = lr.mean(axis=0).astype("int")
+    rightEyeCenter = rr.mean(axis=0).astype("int")
+    dY = rightEyeCenter[1] - leftEyeCenter[1]
+    dX = rightEyeCenter[0] - leftEyeCenter[0]
+    angle = np.degrees(np.arctan2(dY, dX))
+    angle = round(angle, 2)
+
+    return eye, angle
 
 
 def compute_blink_frequency(blinks, duration):
@@ -37,25 +112,24 @@ def compute_head_movement_amplitude_and_frequency(yaw_predicteds, pitch_predicte
     :param duration: 时间间隔（秒）
     :return: 头部晃动幅度和频率
     """
-    print(yaw_predicteds)
-    total_yaw_movement = sum([abs(yaw[0]) for yaw in yaw_predicteds])
-    total_pitch_movement = sum([abs(pitch[0]) for pitch in pitch_predicteds])
-    total_roll_movement = sum([abs(roll[0]) for roll in roll_predicteds])
+    threshold = 10
 
-    # 计算平均幅度
-    avg_yaw_amplitude = total_yaw_movement / len(yaw_predicteds)
-    avg_pitch_amplitude = total_pitch_movement / len(pitch_predicteds)
-    avg_roll_amplitude = total_roll_movement / len(roll_predicteds)
-
-    # 计算频率
-    yaw_frequency = len(yaw_predicteds) / duration
-    pitch_frequency = len(pitch_predicteds) / duration
-    roll_frequency = len(roll_predicteds) / duration
+    # 计算大幅度晃动的时间段
+    large_yaw_movements = sum(
+        1 for i in range(1, len(yaw_predicteds)) if abs(yaw_predicteds[i][0] - yaw_predicteds[i - 1][0]) > threshold)
+    large_pitch_movements = sum(
+        1 for i in range(1, len(pitch_predicteds)) if abs(pitch_predicteds[i][0] - pitch_predicteds[i - 1][0]) > threshold)
+    large_roll_movements = sum(
+        1 for i in range(1, len(roll_predicteds)) if abs(roll_predicteds[i][0] - roll_predicteds[i - 1][0]) > threshold)
+    # 计算大幅度晃动的频率
+    yaw_frequency = large_yaw_movements / duration
+    pitch_frequency = large_pitch_movements / duration
+    roll_frequency = large_roll_movements / duration
 
     return {
-        'yaw_amplitude': avg_yaw_amplitude,
-        'pitch_amplitude': avg_pitch_amplitude,
-        'roll_amplitude': avg_roll_amplitude,
+        'yaw_amplitude': large_yaw_movements,
+        'pitch_amplitude': large_pitch_movements,
+        'roll_amplitude': large_roll_movements,
         'yaw_frequency': yaw_frequency,
         'pitch_frequency': pitch_frequency,
         'roll_frequency': roll_frequency
@@ -69,6 +143,47 @@ def convert_tensors_to_floats(tensor_list):
     """
     return [float(tensor.item()) for tensor in tensor_list]
 
+def evaluate_ratio(attention_list, threshold=0.65, consecutive_threshold=5):
+    """
+    评估学生上课的注意力是否集中，并记录注意力变化的时间点
+    :param attention_list: 学生的注意力列表，True 表示注意力集中，False 表示不集中
+    :param threshold: 注意力集中的阈值，默认为 0.8
+    :return: 注意力集中时长和注意力变化时间点
+    """
+    print(attention_list)
+    attention_list = list(attention_list)
+    print(attention_list)
+    if not attention_list:
+        return 0, []
+
+    # 记录注意力变化的时间点
+    attention_changes = []
+    # 记录注意力集中时长
+    focused_duration = 0
+    consecutive_focused_duration = 0
+    # 上一个状态
+    prev_state = attention_list[0]
+
+    for i, state in enumerate(attention_list[1:], start=1):
+        if state != prev_state:
+            if prev_state:  # 注意力从 True 变为 False
+                if consecutive_focused_duration >= consecutive_threshold:
+                    attention_changes.append((i - consecutive_focused_duration, i))
+                consecutive_focused_duration = 0
+            else:  # 注意力从 False 变为 True
+                consecutive_focused_duration = 1
+        else:
+            if state:  # 当前状态为 True
+                consecutive_focused_duration += 1
+
+        prev_state = state
+        # 检查最后一段连续的注意力集中
+    if prev_state and consecutive_focused_duration >= consecutive_threshold:
+        attention_changes.append((len(attention_list) - consecutive_focused_duration, len(attention_list)))
+    # 计算注意力集中时长
+    total_duration = len(attention_list)
+    focused_ratio = sum(end - start for start, end in attention_changes) / total_duration
+    return focused_ratio, attention_changes
 
 def evaluate_attention(emotion_data):
     """
@@ -127,7 +242,7 @@ def evaluate_attention(emotion_data):
         attention_level = 'mixed'
 
     blink_frequency = compute_blink_frequency(total_blinks, duration=len(data))
-
+    well, attention_changes = evaluate_ratio(entry["is_att"] for entry in data)
     head_movement_data = compute_head_movement_amplitude_and_frequency(
         [convert_tensors_to_floats(entry["yaw_predicteds"]) for entry in data],
         [convert_tensors_to_floats(entry["pitch_predicteds"]) for entry in data],
@@ -135,12 +250,11 @@ def evaluate_attention(emotion_data):
         duration=len(data)
     )
     return {
-        'attention_level': attention_level,
-        'emotion_counts': emotion_counts,
-        'total_blinks': total_blinks,
-        'total_head_movements': total_head_movements,
+        '积极程度': attention_level,
         'blink_frequency': blink_frequency,
-        'head_movement_data': head_movement_data
+        'head_movement_data': head_movement_data,
+        '是否注意力集中':well,
+        'attention_changes':attention_changes
     }
 
 video_path = r'E:\ai-test\video_test\LB7iciNMKHyxn5N4.mp4'
@@ -182,6 +296,9 @@ total = 0
 idx_tensor = [idx for idx in range(66)]
 idx_tensor = torch.FloatTensor(idx_tensor)
 frame_cnt = 0
+WEIGHT_PATH = "Student_Logger-Gaze_Tracking-master/4layer/Weights-9788--0.92333--0.96371.hdf5"
+att_model = load_model('Student_Logger-Gaze_Tracking-master/4layer/Model.h5')
+att_model.load_weights(WEIGHT_PATH)
 while True:
     ret, frame = cap.read()
     frame_cnt = frame_cnt+1
@@ -200,6 +317,20 @@ while True:
         emotions = []
         max_emotion = max(results["emotion"], key=results["emotion"].get)
         max_probability = results["emotion"][max_emotion]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = detector(gray)
+        is_att = False
+        for face in faces:
+            landmarks = predictor(gray, face)
+            CC, angle = get_eye_points(frame, landmarks)
+            x, y, w, he = get_face_points(face)
+            x0, y0, x1, y1 = get_head_pose(gray, landmarks)
+            a, b, c, d, e, f, g, h, i, j, k, l = main_pupil(CC)
+            m = np.array([a, b, c, d, e, f, g, h, i, j, k, l, angle, x, y, w, he, x0, y0, x1, y1])
+            m = tf.convert_to_tensor(np.expand_dims(m, 0), dtype=tf.float32)
+            n = att_model.predict(m)
+            if (n > 0.5):
+                is_att = True
 
         eye_frame = imutils.resize(frame, width=450)
         eye_gray = cv2.cvtColor(eye_frame, cv2.COLOR_BGR2GRAY)
@@ -264,7 +395,8 @@ while True:
             "is_blink":flag,
             'yaw_predicteds':yaw_predicteds,
             "pitch_predicteds":pitch_predicteds,
-            "roll_predicteds":roll_predicteds
+            "roll_predicteds":roll_predicteds,
+            "is_att":is_att
         })
         cv2.imshow("Frame", frame)
         print(current_time_sec)
