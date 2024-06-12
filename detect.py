@@ -299,6 +299,8 @@ frame_cnt = 0
 WEIGHT_PATH = "Student_Logger-Gaze_Tracking-master/4layer/Weights-9788--0.92333--0.96371.hdf5"
 att_model = load_model('Student_Logger-Gaze_Tracking-master/4layer/Model.h5')
 att_model.load_weights(WEIGHT_PATH)
+sleep_intervals = [ ]
+no_face_intervals = [ ]
 while True:
     ret, frame = cap.read()
     frame_cnt = frame_cnt+1
@@ -320,6 +322,15 @@ while True:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = detector(gray)
         is_att = False
+
+        if len(faces) == 0:
+            if start_no_face_time is None:
+                start_no_face_time = time.time()
+            else:
+                if start_no_face_time and (time.time() - start_no_face_time) >= 5:
+                    no_face_intervals.append((start_no_face_time, time.time()))
+                    start_no_face_time = time.time()
+
         for face in faces:
             landmarks = predictor(gray, face)
             CC, angle = get_eye_points(frame, landmarks)
@@ -349,11 +360,17 @@ while True:
             cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 1)
             cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
             if ear < EYE_AR_THRESH:
+                if COUNTER == 0:  # 眼睛刚开始闭合
+                    eye_start_time = time.time()  # 记录开始闭眼的时间
                 COUNTER += 1
             else:
                 if COUNTER >= EYE_AR_CONSEC_FRAMES:
                     TOTAL += 1
                     flag = True
+                    end_time = time.time()
+                    closed_duration = end_time - eye_start_time  # 计算闭眼持续时间
+                    if closed_duration >= 5:
+                        sleep_intervals.append((eye_start_time, end_time))  # 记录时间段
                 COUNTER = 0
                 print(f"时间: {current_time_sec}秒, 情绪: {emotions}, 总眨眼次数: {TOTAL}，是否眨眼: {flag}")
             cv2.putText(frame, "Blinks: {}".format(TOTAL), (10, 30),
