@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 from deepface import DeepFace
 import cv2
@@ -301,6 +303,7 @@ att_model = load_model('Student_Logger-Gaze_Tracking-master/4layer/Model.h5')
 att_model.load_weights(WEIGHT_PATH)
 sleep_intervals = [ ]
 no_face_intervals = [ ]
+start_no_face_time = None
 while True:
     ret, frame = cap.read()
     frame_cnt = frame_cnt+1
@@ -415,10 +418,18 @@ while True:
             "roll_predicteds":roll_predicteds,
             "is_att":is_att
         })
+       # frame = imutils.resize(frame, width=450)
         cv2.imshow("Frame", frame)
         print(current_time_sec)
+        print(no_face_intervals)
+        print(sleep_intervals)
         if current_time_sec - last_evaluation_time >= evaluation_interval:
-            print(evaluate_attention(data))
+            data = evaluate_attention(data)
+            data['no_face_intervals'] = no_face_intervals
+            data['sleep_intervals']= sleep_intervals
+            json_filename = 'data.json'
+            with open(json_filename, 'a', encoding='utf-8') as json_file:
+                json.dump(data, json_file, ensure_ascii=False, indent=4)
             last_evaluation_time = current_time_sec
             data = []
         frame_cnt = 0
