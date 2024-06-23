@@ -245,21 +245,21 @@ def evaluate_attention(emotion_data):
 
     blink_frequency = compute_blink_frequency(total_blinks, duration=len(data))
     well, attention_changes = evaluate_ratio(entry["is_att"] for entry in data)
-    head_movement_data = compute_head_movement_amplitude_and_frequency(
-        [convert_tensors_to_floats(entry["yaw_predicteds"]) for entry in data],
-        [convert_tensors_to_floats(entry["pitch_predicteds"]) for entry in data],
-        [convert_tensors_to_floats(entry["roll_predicteds"]) for entry in data],
-        duration=len(data)
-    )
+    # head_movement_data = compute_head_movement_amplitude_and_frequency(
+    #     [convert_tensors_to_floats(entry["yaw_predicteds"]) for entry in data],
+    #     [convert_tensors_to_floats(entry["pitch_predicteds"]) for entry in data],
+    #     [convert_tensors_to_floats(entry["roll_predicteds"]) for entry in data],
+    #     duration=len(data)
+    # )
     return {
         '积极程度': attention_level,
         'blink_frequency': blink_frequency,
-        'head_movement_data': head_movement_data,
+        #'head_movement_data': head_movement_data,
         '是否注意力集中':well,
         'attention_changes':attention_changes
     }
 
-video_path = r'E:\ai-test\video_test\LB7iciNMKHyxn5N4.mp4'
+video_path = r'D:\test_video.mp4'
 cap = cv2.VideoCapture(video_path)
 
 if not cap.isOpened():
@@ -303,6 +303,7 @@ att_model = load_model('Student_Logger-Gaze_Tracking-master/4layer/Model.h5')
 att_model.load_weights(WEIGHT_PATH)
 sleep_intervals = [ ]
 no_face_intervals = [ ]
+time_list = [ ]
 start_no_face_time = None
 while True:
     ret, frame = cap.read()
@@ -328,11 +329,11 @@ while True:
 
         if len(faces) == 0:
             if start_no_face_time is None:
-                start_no_face_time = time.time()
+                start_no_face_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
             else:
-                if start_no_face_time and (time.time() - start_no_face_time) >= 5:
-                    no_face_intervals.append((start_no_face_time, time.time()))
-                    start_no_face_time = time.time()
+                if start_no_face_time and (cap.get(cv2.CAP_PROP_POS_MSEC) / 1000 - start_no_face_time) >= 5:
+                    no_face_intervals.append((start_no_face_time, cap.get(cv2.CAP_PROP_POS_MSEC) / 1000))
+                    start_no_face_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
 
         for face in faces:
             landmarks = predictor(gray, face)
@@ -364,13 +365,13 @@ while True:
             cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 1)
             if ear < EYE_AR_THRESH:
                 if COUNTER == 0:  # 眼睛刚开始闭合
-                    eye_start_time = time.time()  # 记录开始闭眼的时间
+                    eye_start_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000 # 记录开始闭眼的时间
                 COUNTER += 1
             else:
                 if COUNTER >= EYE_AR_CONSEC_FRAMES:
                     TOTAL += 1
                     flag = True
-                    end_time = time.time()
+                    end_time = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
                     closed_duration = end_time - eye_start_time  # 计算闭眼持续时间
                     if closed_duration >= 5:
                         sleep_intervals.append((eye_start_time, end_time))  # 记录时间段
@@ -408,6 +409,7 @@ while True:
             pitch_predicteds.append(pitch_predicted)
             roll_predicteds.append(roll_predicted)
 
+        time_list.append(current_time_sec)
         data.append({
             "time": current_time_sec,
             "max_emotion": max_emotion,
@@ -427,6 +429,7 @@ while True:
             data = evaluate_attention(data)
             data['no_face_intervals'] = no_face_intervals
             data['sleep_intervals']= sleep_intervals
+            data['time_list'] = time_list
             json_filename = 'data.json'
             with open(json_filename, 'a', encoding='utf-8') as json_file:
                 json.dump(data, json_file, ensure_ascii=False, indent=4)
